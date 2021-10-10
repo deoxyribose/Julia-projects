@@ -1,0 +1,9 @@
+/.ipynb_checkpoints
+/Factor model.ipynb
+/Mixture model with auto-Gibbs.ipynb
+/Mixture of factor models with hand-derived Gibbs.ipynb
+/Univariate mixture model with hand-derived Gibbs.ipynb
+/factor.jl
+/iterated_prisoners_dilemma.jl
+/test
+/test.pdf
