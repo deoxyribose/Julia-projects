@@ -76,7 +76,7 @@ end
 
 Gen.load_generated_functions()
 
-new_trace = simulate(factor_model, (N,));
+new_trace = simulate(factor_model3, (N,));
 #new_trace = simulate(factor_model2, (N,));
 
 get_choices(new_trace)
@@ -109,7 +109,5 @@ function inference(n_iterations)
     end
     new_trace
 end
-
-
 
 end
