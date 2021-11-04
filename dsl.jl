@@ -22,19 +22,6 @@ for dist in (:exponential, :bernoulli, :poisson)
     @show trace[:x]
 end
 
-struct Generator # either a GenerativeFunction or Distribution
-    generator::Symbol
-    support::Type
-    argtypes::Vector{Type}
-end
-
-abstract type Concept end
-
-#struct TraceExpr <: Expr
-struct TraceExpr
-    generator::Generator
-    address::Symbol
-end
 
 struct PositiveReal{Real}
     x::Real
@@ -61,9 +48,30 @@ struct PositiveInteger{Int64}
     PositiveInteger(x) = x > 0 ? new{Int64}(x) : error("The given number must be an integer greater than 0")
 end
 
+NumericType = Union{Real, Bool, Integer, PositiveReal, PositiveInteger, Probability}
+struct Generator # either a GenerativeFunction or Distribution
+    name::Symbol
+    support::Type
+    argtypes::Vector{Type}
+end
+
+abstract type Concept end
+struct TraceExpr
+    generator::Generator
+    address::Symbol
+    args::Array{Concept}
+end
+
+struct CombinatorExpr
+    combinator
+    in_generator::Generator
+end
+
+ConceptType = Union{NumericType, Symbol, Expr, TraceExpr, CombinatorExpr}
+#struct Primitive <: Concept
 struct Primitive <: Concept
-    expr::Union{Symbol, TraceExpr, FunctionExpr, CombinatorExpr, ConstantExpr}
-    assigned::Bool # whether the expression is assigned to a variable name, e.g. "z = @trace(dist, :z)" is true, but "@trace(dist, :z)" is false
+    expr::ConceptType
+    #assign_var::Union{Symbol, Nothing} # if symbol is :z, evaluate to "z = expr", if nothing then "expr"
 end
 
 mutable struct Scope
@@ -81,13 +89,22 @@ distributions = [
     #Generator(:dirichlet, ProbabilityVector, [Vector{PositiveReal}])
 ]
 
-function interpret(concept::Concept)
+function interpret(trace_expr::TraceExpr)
+    argsExpr = [interpret(arg) for arg in trace_expr.args]
+    return Expr(:macrocall, Symbol("@trace"), Expr(:line), Expr(:call, trace_expr.generator.name, argsExpr...), Expr(:quote, trace_expr.address))
+end
 
+function interpret(concept::Primitive)
+    return interpret(concept.expr)
+end
+
+function interpret(expr::Union{NumericType, Symbol, Expr})
+    return expr
 end
 
 numeric_types = [Real, Bool, Integer, PositiveReal, PositiveInteger, Probability]
 
-function get_compatible_types(observations, numeric_types)
+function get_compatible_types(observations, numeric_types::Array{Type,1})::Array{Type,1}
     compatible_types = []
     for type in numeric_types
         try
@@ -100,7 +117,7 @@ function get_compatible_types(observations, numeric_types)
     return compatible_types
 end
 
-function get_compatible_types(observations::Array)
+function get_compatible_types(observations::Array)::Array{Type,1}
     D = ndims(observations)
     @assert D > 0
     compatible_types = []
@@ -124,8 +141,21 @@ function synthesize(observations)
     
 end
 
+function wrap_in_generative_function(expr)
+    genfun = quote
+        @gen function generate_latent()
+            return $expr
+        end;
+    end
+    return eval(genfun)
+end
 # to synthesize a probabilistic program for a given data-matrix X
 # we do a top-down search
 # pruning invalid programs along the way using types
 
 scope = Scope([:X],[])
+traceexpr = TraceExpr(distributions[end], :x, [Primitive(0.9)])
+traceexpr = TraceExpr(distributions[1], :x, [Primitive(0.9),Primitive(0.9)])
+foo = interpret(traceexpr)
+tmp = wrap_in_generative_function(foo)
+tmp()
