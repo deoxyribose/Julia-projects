@@ -1,10 +1,9 @@
 using Distributions, Gen
 using LinearAlgebra
+using MacroTools
 
 # Define primitives for probabilistic program synthesis
-@gen function generate_latent()
-    return @trace(exponential(0.9), :x)
-end;
+
 
 foo = quote
     @gen function generate_latent()
@@ -50,7 +49,7 @@ end
 
 NumericType = Union{Real, Bool, Integer, PositiveReal, PositiveInteger, Probability}
 struct Generator # either a GenerativeFunction or Distribution
-    name::Symbol
+    name::Union{Symbol, CombinatorExpr}
     support::Type
     argtypes::Vector{Type}
 end
@@ -63,8 +62,11 @@ struct TraceExpr
 end
 
 struct CombinatorExpr
-    combinator
-    in_generator::Generator
+    combinator::Symbol
+    in_generator::Symbol
+    args # args type depends on combinator and in_generator.
+         # If combinator is Map, and in_generator has input type T
+         # args has type Vector{T}
 end
 
 ConceptType = Union{NumericType, Symbol, Expr, TraceExpr, CombinatorExpr}
@@ -89,9 +91,15 @@ distributions = [
     #Generator(:dirichlet, ProbabilityVector, [Vector{PositiveReal}])
 ]
 
+combinators = [
+
+]
+
 function interpret(trace_expr::TraceExpr)
     argsExpr = [interpret(arg) for arg in trace_expr.args]
-    return Expr(:macrocall, Symbol("@trace"), Expr(:line), Expr(:call, trace_expr.generator.name, argsExpr...), Expr(:quote, trace_expr.address))
+    distribution = Expr(:call, interpret(trace_expr.generator.name), argsExpr...)
+    address = Expr(:quote, trace_expr.address)
+    return Expr(:macrocall, Symbol("@trace"), Expr(:line), distribution, address)
 end
 
 function interpret(concept::Primitive)
@@ -104,7 +112,7 @@ end
 
 numeric_types = [Real, Bool, Integer, PositiveReal, PositiveInteger, Probability]
 
-function get_compatible_types(observations, numeric_types::Array{Type,1})::Array{Type,1}
+function get_compatible_types(observations, numeric_types::Array{Type,1} = numeric_types)::Array{Type,1}
     compatible_types = []
     for type in numeric_types
         try
@@ -134,16 +142,32 @@ function get_compatible_types(observations::Array)::Array{Type,1}
     return compatible_types
 end
 
+function get_return_type(traceexpr::TraceExpr)::Type
+    return traceexpr.generator.support
+end
+
+fun = quote
+    function get_return_type(traceexpr::TraceExpr)::Type
+        return traceexpr.generator.support
+    end
+end
+
+function get_function_type(funexpr)
+    fundef = splitdef(funexpr) 
+    return eval(fundef[:args][1].args[2]) => eval(fundef[:rtype])
+end
+
 function synthesize(observations)
     # get types that are compatible with observations
     observation_types = get_compatible_types(observations)
-    # get concepts that are compatible with observation_types
+    println(observation_types)
+    # get primitive concepts that are compatible with observation_types
     
 end
 
 function wrap_in_generative_function(expr)
     genfun = quote
-        @gen function generate_latent()
+        @gen function generate()
             return $expr
         end;
     end
@@ -158,4 +182,18 @@ traceexpr = TraceExpr(distributions[end], :x, [Primitive(0.9)])
 traceexpr = TraceExpr(distributions[1], :x, [Primitive(0.9),Primitive(0.9)])
 foo = interpret(traceexpr)
 tmp = wrap_in_generative_function(foo)
-tmp()
+obs = tmp()
+
+@gen function generate_latent(i::Int64)
+    return @trace(exponential(0.9), :x)
+end;
+fun = quote
+    @gen function generate_latent(i::Int64)
+        return @trace(exponential(0.9), :x)
+    end;
+    # function generate(i::Int64)::Real
+    #     return exponential(0.9)
+    # end
+end
+
+combexpr = CombinatorExpr(Gen.Map, )
