@@ -48,10 +48,22 @@ struct PositiveInteger{Int64}
 end
 
 NumericType = Union{Real, Bool, Integer, PositiveReal, PositiveInteger, Probability}
+
 struct Generator # either a GenerativeFunction or Distribution
     name::Union{Symbol, CombinatorExpr}
     support::Type
-    argtypes::Vector{Type}
+    argtypes::Union{T, Vector{T}} where T <: Type
+end
+struct Combinator
+    name::Symbol
+    type_signature # A function that takes a pair of types and returns a pair of types
+end
+struct CombinatorExpr
+    combinator::Combinator
+    in_generator::Generator
+    args # args type depends on combinator and in_generator.
+         # If combinator is Map, and in_generator has input type T
+         # args has type Vector{T}
 end
 
 abstract type Concept end
@@ -61,19 +73,17 @@ struct TraceExpr
     args::Array{Concept}
 end
 
-struct CombinatorExpr
-    combinator::Symbol
-    in_generator::Symbol
-    args # args type depends on combinator and in_generator.
-         # If combinator is Map, and in_generator has input type T
-         # args has type Vector{T}
-end
-
 ConceptType = Union{NumericType, Symbol, Expr, TraceExpr, CombinatorExpr}
 #struct Primitive <: Concept
 struct Primitive <: Concept
     expr::ConceptType
     #assign_var::Union{Symbol, Nothing} # if symbol is :z, evaluate to "z = expr", if nothing then "expr"
+end
+
+struct GFExpr
+    name::Symbol
+    args::Union{Expr, Vector{Expr}} # an expression like i::Int64
+    expr::Array{Concept}
 end
 
 mutable struct Scope
@@ -83,16 +93,19 @@ end
 
 distributions = [
     Generator(:normal, Real, [Real, PositiveReal]),
-    Generator(:poisson, NonNegativeInteger, [PositiveReal]),
-    Generator(:bernoulli, Bool, [Probability]),
+    Generator(:poisson, NonNegativeInteger, PositiveReal),
+    Generator(:bernoulli, Bool, Probability),
     Generator(:beta, Probability, [PositiveReal, PositiveReal]),
-    Generator(:exponential, PositiveReal, [PositiveReal]),
+    Generator(:exponential, PositiveReal, PositiveReal),
     #Generator(:categorical, Integer, [ProbabilityVector]),
     #Generator(:dirichlet, ProbabilityVector, [Vector{PositiveReal}])
 ]
 
 combinators = [
-
+    Combinator(:Map, T::Pair{Type, Type} -> Array{first(T), 1} => Array{last(T), 1})
+    #:Unfold,
+    #:Recurse,
+    #:Switch
 ]
 
 function interpret(trace_expr::TraceExpr)
@@ -108,6 +121,23 @@ end
 
 function interpret(expr::Union{NumericType, Symbol, Expr})
     return expr
+end
+
+function interpret(gfexpr::GFExpr)
+    #for expr in gfexpr.expr
+    return_expr = interpret(gfexpr.expr[end])
+    genfun = quote
+        @gen function $(gfexpr.name)()
+            return $return_expr
+        end;
+    end
+    if gfexpr.args isa Vector
+        argtype = [eval(arg.args[2]) for arg in gfexpr.args]
+    else
+        argtype = eval(gfexpr.args.args[2])
+    end
+    push!(scope.generators, Generator(gfexpr.name,get_return_type(gfexpr),argtype))
+    return genfun
 end
 
 numeric_types = [Real, Bool, Integer, PositiveReal, PositiveInteger, Probability]
@@ -146,11 +176,17 @@ function get_return_type(traceexpr::TraceExpr)::Type
     return traceexpr.generator.support
 end
 
-fun = quote
-    function get_return_type(traceexpr::TraceExpr)::Type
-        return traceexpr.generator.support
-    end
+function get_return_type(gfexpr::GFExpr)::Type
+    return get_return_type(gfexpr.expr[end])
 end
+
+function get_return_type(expr::Primitive)::Type
+    return get_return_type(expr.expr)
+end
+
+function get_return_type(combiexpr::CombinatorExpr)::Type
+
+
 
 function get_function_type(funexpr)
     fundef = splitdef(funexpr) 
@@ -165,35 +201,21 @@ function synthesize(observations)
     
 end
 
-function wrap_in_generative_function(expr)
-    genfun = quote
-        @gen function generate()
-            return $expr
-        end;
-    end
-    return eval(genfun)
-end
+
 # to synthesize a probabilistic program for a given data-matrix X
 # we do a top-down search
 # pruning invalid programs along the way using types
 
-scope = Scope([:X],[])
-traceexpr = TraceExpr(distributions[end], :x, [Primitive(0.9)])
-traceexpr = TraceExpr(distributions[1], :x, [Primitive(0.9),Primitive(0.9)])
-foo = interpret(traceexpr)
-tmp = wrap_in_generative_function(foo)
-obs = tmp()
+global scope = Scope([:X],[])
+traceexpr = TraceExpr(distributions[end], :sigma, [Primitive(0.9)])
+traceexpr2 = TraceExpr(distributions[1], :x, [Primitive(0.9),Primitive(traceexpr)])
+gfe = GFExpr(:generate_latent, :(i::Int64), [Primitive(traceexpr2)])
 
-@gen function generate_latent(i::Int64)
-    return @trace(exponential(0.9), :x)
-end;
-fun = quote
-    @gen function generate_latent(i::Int64)
-        return @trace(exponential(0.9), :x)
-    end;
-    # function generate(i::Int64)::Real
-    #     return exponential(0.9)
-    # end
-end
+#foo = interpret(traceexpr2)
+#tmp = wrap_in_generative_function(foo)
+obs = eval(interpret(gfe))()
 
-combexpr = CombinatorExpr(Gen.Map, )
+
+# Define a combinator struct
+# that allows for inferring the type of the resulting GenerativeFunction
+#combexpr = CombinatorExpr(:Map, )
