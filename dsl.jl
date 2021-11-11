@@ -2,13 +2,23 @@ using Distributions, Gen
 using LinearAlgebra
 using MacroTools
 
-# Define primitives for probabilistic program synthesis
+# Define DSLNodes for probabilistic program synthesis
 
 
-foo = quote
-    @gen function generate_latent()
-        return @trace(exponential(0.9), :x)
-    end;
+@gen function generate_latent(i::Int64)
+    return @trace(exponential(0.9), :x)
+end;
+
+@gen function single()
+    return @trace(generate_latent(1), :x)
+end
+
+@gen function vector()
+    return @trace(Map(generate_latent)(1:5), :x)
+end
+
+@gen function matrix()
+    return @trace(Map(Map(generate_latent))([1:3,1:3,1:3]), :x)
 end
 
 for dist in (:exponential, :bernoulli, :poisson)
@@ -49,38 +59,47 @@ end
 
 NumericType = Union{Real, Bool, Integer, PositiveReal, PositiveInteger, Probability}
 
-struct Generator # either a GenerativeFunction or Distribution
-    name::Union{Symbol, CombinatorExpr}
-    support::Type
-    argtypes::Union{T, Vector{T}} where T <: Type
-end
 struct Combinator
     name::Symbol
     type_signature # A function that takes a pair of types and returns a pair of types
 end
-struct CombinatorExpr
+struct CombinatorNode
     combinator::Combinator
-    in_generator::Generator
-    args # args type depends on combinator and in_generator.
-         # If combinator is Map, and in_generator has input type T
+    kernel::Union{Int64, CombinatorNode} # the index of a generative function in the current scope
+    args # args type depends on combinator and kernel.
+         # If combinator is Map, and kernel has input type T
          # args has type Vector{T}
 end
-
+struct Generator
+    #=
+    An expression that can be traced, e.g.
+    @trace(Normal(0.,1.), :z)
+    @trace(latent(1), :z)
+    @trace(Map(latent)(1:K), :z)
+    @trace(Map(Map(latent))([1:3,1:3,1:3]), :x)
+    =#
+    name::Union{Symbol, CombinatorNode}
+    support::Type
+    argtypes::Union{T, Vector{T}} where T <: Type
+end
 abstract type Concept end
-struct TraceExpr
+struct TraceNode
     generator::Generator
     address::Symbol
     args::Array{Concept}
 end
 
-ConceptType = Union{NumericType, Symbol, Expr, TraceExpr, CombinatorExpr}
-#struct Primitive <: Concept
-struct Primitive <: Concept
+ConceptType = Union{NumericType, Symbol, Expr, TraceNode, CombinatorNode}
+#struct DSLNode <: Concept
+struct DSLNode <: Concept
     expr::ConceptType
     #assign_var::Union{Symbol, Nothing} # if symbol is :z, evaluate to "z = expr", if nothing then "expr"
 end
 
-struct GFExpr
+struct GenNode
+    #=
+    Generative function
+    =#
     name::Symbol
     args::Union{Expr, Vector{Expr}} # an expression like i::Int64
     expr::Array{Concept}
@@ -102,20 +121,20 @@ distributions = [
 ]
 
 combinators = [
-    Combinator(:Map, T::Pair{Type, Type} -> Array{first(T), 1} => Array{last(T), 1})
+    Combinator(:Map, S::(Pair{T, T} where T<:Type) -> Vector{first(S)} => Vector{last(S)})
     #:Unfold,
     #:Recurse,
     #:Switch
 ]
 
-function interpret(trace_expr::TraceExpr)
+function interpret(trace_expr::TraceNode)
     argsExpr = [interpret(arg) for arg in trace_expr.args]
     distribution = Expr(:call, interpret(trace_expr.generator.name), argsExpr...)
     address = Expr(:quote, trace_expr.address)
     return Expr(:macrocall, Symbol("@trace"), Expr(:line), distribution, address)
 end
 
-function interpret(concept::Primitive)
+function interpret(concept::DSLNode)
     return interpret(concept.expr)
 end
 
@@ -123,21 +142,29 @@ function interpret(expr::Union{NumericType, Symbol, Expr})
     return expr
 end
 
-function interpret(gfexpr::GFExpr)
-    #for expr in gfexpr.expr
-    return_expr = interpret(gfexpr.expr[end])
+function interpret(gen_node::GenNode)
+    #for expr in GenNode.expr
+    return_expr = interpret(gen_node.expr[end])
+    args_expr = interpret(gen_node.args)
     genfun = quote
-        @gen function $(gfexpr.name)()
+        @gen function $(gen_node.name)($args_expr)
             return $return_expr
         end;
     end
-    if gfexpr.args isa Vector
-        argtype = [eval(arg.args[2]) for arg in gfexpr.args]
+    if gen_node.args isa Vector
+        argtype = [eval(arg.args[2]) for arg in gen_node.args]
     else
-        argtype = eval(gfexpr.args.args[2])
+        argtype = eval(gen_node.args.args[2])
     end
-    push!(scope.generators, Generator(gfexpr.name,get_return_type(gfexpr),argtype))
+    push!(scope.generators, Generator(gen_node.name,get_return_type(gen_node),argtype))
     return genfun
+end
+
+function interpret(comb_node::CombinatorNode)
+    # assert that kernel domain type matches input type
+    arg_expr = interpret(comb_node.args)
+    kernel = scope.generators[comb_node.kernel].name
+    return Expr(:call, Expr(:call, comb_node.combinator.name, kernel), arg_expr)
 end
 
 numeric_types = [Real, Bool, Integer, PositiveReal, PositiveInteger, Probability]
@@ -156,6 +183,16 @@ function get_compatible_types(observations, numeric_types::Array{Type,1} = numer
 end
 
 function get_compatible_types(observations::Array)::Array{Type,1}
+    #=
+    Assuming observations contains elements of the same type
+    returns an array of all types that are compatible
+    e.g.
+    julia> get_compatible_types(rand(2,2))
+    3-element Array{Type,1}:
+     Array{Real,2}
+     Array{PositiveReal,2}
+     Array{Probability,2}
+    =#
     D = ndims(observations)
     @assert D > 0
     compatible_types = []
@@ -172,21 +209,24 @@ function get_compatible_types(observations::Array)::Array{Type,1}
     return compatible_types
 end
 
-function get_return_type(traceexpr::TraceExpr)::Type
-    return traceexpr.generator.support
+function get_return_type(trace_node::TraceNode)
+    return trace_node.generator.support
 end
 
-function get_return_type(gfexpr::GFExpr)::Type
-    return get_return_type(gfexpr.expr[end])
+function get_return_type(gen_node::GenNode)
+    return get_return_type(gen_node.expr[end])
 end
 
-function get_return_type(expr::Primitive)::Type
-    return get_return_type(expr.expr)
+function get_return_type(dsl_node::DSLNode)
+    return get_return_type(dsl_node.expr)
 end
 
-function get_return_type(combiexpr::CombinatorExpr)::Type
-
-
+function get_return_type(comb_node::CombinatorNode)
+    # assert kernel is in scope
+    kernel_input_type = scope.generators[comb_node.kernel].argtypes
+    kernel_output_type = scope.generators[comb_node.kernel].support
+    return comb_node.combinator.type_signature(kernel_input_type => kernel_output_type)
+end
 
 function get_function_type(funexpr)
     fundef = splitdef(funexpr) 
@@ -197,25 +237,31 @@ function synthesize(observations)
     # get types that are compatible with observations
     observation_types = get_compatible_types(observations)
     println(observation_types)
-    # get primitive concepts that are compatible with observation_types
+    # get DSLNode concepts that are compatible with observation_types
     
 end
-
 
 # to synthesize a probabilistic program for a given data-matrix X
 # we do a top-down search
 # pruning invalid programs along the way using types
 
 global scope = Scope([:X],[])
-traceexpr = TraceExpr(distributions[end], :sigma, [Primitive(0.9)])
-traceexpr2 = TraceExpr(distributions[1], :x, [Primitive(0.9),Primitive(traceexpr)])
-gfe = GFExpr(:generate_latent, :(i::Int64), [Primitive(traceexpr2)])
+sample_exp = TraceNode(distributions[end], :sigma, [DSLNode(0.9)])
+sample_norm = TraceNode(distributions[1], :x, [DSLNode(0.9),DSLNode(sample_exp)])
+gfe = GenNode(:generate_latent, :(i::Int64), [DSLNode(sample_norm)])
 
-#foo = interpret(traceexpr2)
+#foo = interpret(TraceNode2)
 #tmp = wrap_in_generative_function(foo)
-obs = eval(interpret(gfe))()
-
+obs = eval(interpret(gfe))(1)
 
 # Define a combinator struct
 # that allows for inferring the type of the resulting GenerativeFunction
-#combexpr = CombinatorExpr(:Map, )
+iid_norm = CombinatorNode(combinators[1], 1, :(1:3))
+get_return_type(iid_norm)
+
+# Generators should be automatically created from CombinatorNodes
+# Too much redunancy?
+#sample_iid = TraceNode(Generator())
+
+
+#iid_norm.combinator.type_signature(Int64 => Float64)
