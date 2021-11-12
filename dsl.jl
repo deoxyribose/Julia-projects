@@ -57,53 +57,52 @@ struct PositiveInteger{Int64}
     PositiveInteger(x) = x > 0 ? new{Int64}(x) : error("The given number must be an integer greater than 0")
 end
 
-NumericType = Union{Real, Bool, Integer, PositiveReal, PositiveInteger, Probability}
+abstract type DSLNode end
 
+NumericType = Union{Real, Bool, Integer, PositiveReal, PositiveInteger, Probability}
+struct Num <: DSLNode
+    expr::NumericType
+end
 struct Combinator
     name::Symbol
     type_signature # A function that takes a pair of types and returns a pair of types
 end
-struct CombinatorNode
+struct CombinatorNode <: DSLNode
     combinator::Combinator
     kernel::Union{Int64, CombinatorNode} # the index of a generative function in the current scope
-    args # args type depends on combinator and kernel.
-         # If combinator is Map, and kernel has input type T
-         # args has type Vector{T}
 end
-struct Generator
+struct Generator <: DSLNode
     #=
-    An expression that can be traced, e.g.
-    @trace(Normal(0.,1.), :z)
-    @trace(latent(1), :z)
-    @trace(Map(latent)(1:K), :z)
-    @trace(Map(Map(latent))([1:3,1:3,1:3]), :x)
+    A distribution or generative function in the scope, e.g.
+    Normal
+    generate_latent
     =#
-    name::Union{Symbol, CombinatorNode}
+    name::Symbol
     support::Type
-    argtypes::Union{T, Vector{T}} where T <: Type
+    argtypes::Union{Nothing, T, Vector{T}} where T <: Type
 end
-abstract type Concept end
-struct TraceNode
-    generator::Generator
+
+Generator(name, support) = Generator(name, support, nothing)
+struct TraceNode <: DSLNode
+    generator::Union{Generator, CombinatorNode}
     address::Symbol
-    args::Array{Concept}
+    args::Array{DSLNode}
 end
 
-ConceptType = Union{NumericType, Symbol, Expr, TraceNode, CombinatorNode}
-#struct DSLNode <: Concept
-struct DSLNode <: Concept
-    expr::ConceptType
-    #assign_var::Union{Symbol, Nothing} # if symbol is :z, evaluate to "z = expr", if nothing then "expr"
+struct JuliaExpr <: DSLNode
+    expr::Union{Symbol, Expr}
 end
 
-struct GenNode
+struct GenNode <: DSLNode
     #=
     Generative function
     =#
     name::Symbol
-    args::Union{Expr, Vector{Expr}} # an expression like i::Int64
-    expr::Array{Concept}
+    args::Union{Nothing, Expr, Vector{Expr}} # an expression like i::Int64
+    expr::Array{DSLNode}
 end
+
+GenNode(name, expr) = GenNode(name, nothing, expr)
 
 mutable struct Scope
     variables::Vector{Symbol}
@@ -129,42 +128,61 @@ combinators = [
 
 function interpret(trace_expr::TraceNode)
     argsExpr = [interpret(arg) for arg in trace_expr.args]
-    distribution = Expr(:call, interpret(trace_expr.generator.name), argsExpr...)
+    distribution = Expr(:call, interpret(trace_expr.generator), argsExpr...)
     address = Expr(:quote, trace_expr.address)
     return Expr(:macrocall, Symbol("@trace"), Expr(:line), distribution, address)
 end
 
-function interpret(concept::DSLNode)
-    return interpret(concept.expr)
+function interpret(generator::Generator)
+    return generator.name
 end
 
-function interpret(expr::Union{NumericType, Symbol, Expr})
+function interpret(expr::Union{Num, JuliaExpr})
+    return expr.expr
+end
+
+function interpret(expr::Expr)
     return expr
 end
 
 function interpret(gen_node::GenNode)
     #for expr in GenNode.expr
     return_expr = interpret(gen_node.expr[end])
-    args_expr = interpret(gen_node.args)
-    genfun = quote
-        @gen function $(gen_node.name)($args_expr)
-            return $return_expr
-        end;
-    end
-    if gen_node.args isa Vector
-        argtype = [eval(arg.args[2]) for arg in gen_node.args]
+    if isnothing(gen_node.args)
+        genfun = quote
+            @gen function $(gen_node.name)()
+                return $return_expr
+            end;
+        end
+        push!(scope.generators, Generator(gen_node.name,get_return_type(gen_node)))
     else
-        argtype = eval(gen_node.args.args[2])
+        args_expr = interpret(gen_node.args)
+        genfun = quote
+            @gen function $(gen_node.name)($args_expr)
+                return $return_expr
+            end;
+        end
+        if gen_node.args isa Vector
+            argtype = [eval(arg.args[2]) for arg in gen_node.args]
+        else
+            argtype = eval(gen_node.args.args[2])
+        end
+        push!(scope.generators, Generator(gen_node.name,get_return_type(gen_node),argtype))
     end
-    push!(scope.generators, Generator(gen_node.name,get_return_type(gen_node),argtype))
     return genfun
 end
 
+# function interpret(comb_node::CombinatorNode)
+#     # assert that kernel domain type matches input type
+#     arg_expr = interpret(comb_node.args)
+#     kernel = scope.generators[comb_node.kernel].name
+#     return Expr(:call, Expr(:call, comb_node.combinator.name, kernel), arg_expr)
+# end
+
 function interpret(comb_node::CombinatorNode)
     # assert that kernel domain type matches input type
-    arg_expr = interpret(comb_node.args)
     kernel = scope.generators[comb_node.kernel].name
-    return Expr(:call, Expr(:call, comb_node.combinator.name, kernel), arg_expr)
+    return Expr(:call, comb_node.combinator.name, kernel)
 end
 
 numeric_types = [Real, Bool, Integer, PositiveReal, PositiveInteger, Probability]
@@ -210,15 +228,19 @@ function get_compatible_types(observations::Array)::Array{Type,1}
 end
 
 function get_return_type(trace_node::TraceNode)
-    return trace_node.generator.support
+    if isa(trace_node.generator, CombinatorNode)
+        return last(get_return_type(trace_node.generator))
+    elseif isa(trace_node.generator, Generator)
+        return trace_node.generator.support
+    end
+end
+
+function get_return_type(num::Num)
+    return typeof(num.expr)
 end
 
 function get_return_type(gen_node::GenNode)
     return get_return_type(gen_node.expr[end])
-end
-
-function get_return_type(dsl_node::DSLNode)
-    return get_return_type(dsl_node.expr)
 end
 
 function get_return_type(comb_node::CombinatorNode)
@@ -237,7 +259,7 @@ function synthesize(observations)
     # get types that are compatible with observations
     observation_types = get_compatible_types(observations)
     println(observation_types)
-    # get DSLNode concepts that are compatible with observation_types
+    # get DSLNode DSLNodes that are compatible with observation_types
     
 end
 
@@ -246,9 +268,9 @@ end
 # pruning invalid programs along the way using types
 
 global scope = Scope([:X],[])
-sample_exp = TraceNode(distributions[end], :sigma, [DSLNode(0.9)])
-sample_norm = TraceNode(distributions[1], :x, [DSLNode(0.9),DSLNode(sample_exp)])
-gfe = GenNode(:generate_latent, :(i::Int64), [DSLNode(sample_norm)])
+sample_exp = TraceNode(distributions[end], :sigma, [Num(0.9)])
+sample_norm = TraceNode(distributions[1], :x, [Num(0.9),sample_exp])
+gfe = GenNode(:generate_latent, :(i::Int64), [sample_norm])
 
 #foo = interpret(TraceNode2)
 #tmp = wrap_in_generative_function(foo)
@@ -256,12 +278,11 @@ obs = eval(interpret(gfe))(1)
 
 # Define a combinator struct
 # that allows for inferring the type of the resulting GenerativeFunction
-iid_norm = CombinatorNode(combinators[1], 1, :(1:3))
+iid_norm = CombinatorNode(combinators[1], 1)
 get_return_type(iid_norm)
 
-# Generators should be automatically created from CombinatorNodes
-# Too much redunancy?
-#sample_iid = TraceNode(Generator())
+sample_iid = TraceNode(iid_norm, :xs, [JuliaExpr(:(1:3))])
 
+gfe = GenNode(:generate_vector, [sample_iid])
 
-#iid_norm.combinator.type_signature(Int64 => Float64)
+obs = eval(interpret(gfe))()
