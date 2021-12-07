@@ -23,7 +23,7 @@ struct DistFunTyp <: Typ
 end
 
 struct ListTyp <: Typ
-    elems::Typ
+    name::Typ
 end
 
 struct ProdTyp <: Typ
@@ -65,6 +65,34 @@ macro parseTypeExpr(x)
     return esc(:($(parseTypeExpr(x))))
 end
 
+function yield(expr::Expr)
+    yield(parseTypeExpr(expr))
+end
+
+function yield(expr::Typ)
+    if hasproperty(expr, :elems)
+        return yield(last(expr.elems))
+    else
+        return expr
+    end
+end
+
+function yield(exprs::Vector{Expr})
+    yields = []
+    for expr in exprs
+        push!(yields, yield(expr))
+    end
+    if all([y == yields[1] for y in yields])
+        return yields[1]
+    else
+        error("Type expression has multiple inconsistent yields")
+    end
+end
+
+function isasubtype(x::DataTyp, y::DataTyp)
+    return x.name <: y.name || y.name <: x.name
+end
+
 function binding(x, s)
     if haskey(s, x)
         return s[x]
@@ -76,7 +104,7 @@ end
 function unify(x, y, s)
     x = binding(x, s)
     y = binding(y, s)
-    if x == y
+    if x == y || (x isa DataTyp && y isa DataTyp && isasubtype(x,y))
         return s
     end
     if x isa TypeVar
@@ -109,57 +137,49 @@ unify(x, y) = unify(x, y, Dict())
 
 # unify(@parseTypeExpr((:a => :b) => ([:a] => [:b])), @parseTypeExpr((Int64 => Float64) => ([Int64] => [Float64])))
 
-function get_subtitutions(expr1, expr2)
-    d = unify(parseTypeExpr((expr1)), parseTypeExpr(expr2))
-    if !isnothing(d)
-        return [k => v for (k, v) in d if k isa TypeVar]
+function get_substitutions(expr1::Expr, expr2::Expr)
+    return get_substitutions(parseTypeExpr(expr1), parseTypeExpr(expr2))
+end
+
+function get_substitutions(expr1::Expr, expr2::Typ)
+    return get_substitutions(parseTypeExpr(expr1), expr2)
+end
+
+get_substitutions(expr1::Typ, expr2::Expr) = get_substitutions(expr2, expr1)
+
+function get_substitutions(expr1s::Vector{Expr}, expr2)
+    d = Dict()
+    for expr1 in expr1s
+        d2 = get_substitutions(expr1, expr2)
+        if !isnothing(d2)
+            d = merge(d, d2)
+        end
+    end
+    return !isempty(d) ? d : nothing
+end
+
+get_substitutions(expr1, expr2s::Vector{Expr}) = get_substitutions(expr2s, expr1)
+
+function get_substitutions(expr1::Typ, expr2::Typ)
+    d = unify(expr1, expr2)
+    if isempty(d)
+        return true
+    elseif !isnothing(d)
+        #return [k => v for (k, v) in d if k isa TypeVar]
+        return [k => v for (k, v) in d if hasproperty(k, :name)]
     else
         return nothing
     end
 end
 
+function get_argtypes(expr::Expr)
+    return get_argtypes(parseTypeExpr(expr))
+end
 
-# occur_check(x::TypeVar, y::FunTyp, s) = any(occur_check(x, a, s) for a in y.elems)
-
-# function occur_check(x::TypeVar, y::TypeVar, s)
-#     if x == y
-#         return True
-#     elseif haskey(s, y)
-#         return occur_check(x, s[y], s)
-#     else
-#         return nothing
-#     end
-# end
-
-
-# function unify(x::TypeVar, y::Union{TypeVar,Typ}, s)
-#     if x == y
-#         return s
-#     elseif haskey(s, x)
-#         return unify(s[x], y, s)
-#     elseif haskey(s, y) # This is the norvig twist
-#         return unify(x, s[y], s)
-#     elseif occur_check(x, y, s)
-#         return nothing
-#     else
-#         s[x] = y
-#         return s
-#     end
-# end
-
-# unify(x::Typ, y::TypeVar, s) = unify(y, x, s)
-
-# function unify(x::Typ, y::Typ, s)
-#     if typeof(x) == typeof(y)
-#         for (x1, y1) in zip(x.elems, y.elems)
-#             if unify(x1, y1, s) === nothing
-#                 return nothing
-#             end
-#         end
-#         return s
-#     else
-#         return nothing
-#     end
-# end
-
-# unify(x, y) = unify(x, y, Dict())
+function get_argtypes(expr::Union{FunTyp,GenFunTyp,DistFunTyp})
+    if expr.elems[1] isa ProdTyp
+        return expr.elems[1].elems
+    else
+        return [expr.elems[1]]
+    end
+end
