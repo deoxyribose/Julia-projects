@@ -65,7 +65,7 @@ macro parseTypeExpr(x)
     return esc(:($(parseTypeExpr(x))))
 end
 
-function yield(expr::Expr)
+function yield(expr::Union{Expr, Symbol})
     yield(parseTypeExpr(expr))
 end
 
@@ -77,7 +77,7 @@ function yield(expr::Typ)
     end
 end
 
-function yield(exprs::Vector{Expr})
+function yield(exprs::Vector{Union{Expr, Symbol}})
     yields = []
     for expr in exprs
         push!(yields, yield(expr))
@@ -116,7 +116,7 @@ function unify(x, y, s)
         return s
     end
     if typeof(x) == typeof(y)
-        if x isa ListTyp
+        if x isa ListTyp || x isa DataTyp
             if unify(x, y, s) === nothing
                 return nothing
             end
@@ -137,17 +137,17 @@ unify(x, y) = unify(x, y, Dict())
 
 # unify(@parseTypeExpr((:a => :b) => ([:a] => [:b])), @parseTypeExpr((Int64 => Float64) => ([Int64] => [Float64])))
 
-function get_substitutions(expr1::Expr, expr2::Expr)
+function get_substitutions(expr1::Union{Expr, Symbol}, expr2::Union{Expr, Symbol})
     return get_substitutions(parseTypeExpr(expr1), parseTypeExpr(expr2))
 end
 
-function get_substitutions(expr1::Expr, expr2::Typ)
+function get_substitutions(expr1::Union{Expr, Symbol}, expr2::Typ)
     return get_substitutions(parseTypeExpr(expr1), expr2)
 end
 
-get_substitutions(expr1::Typ, expr2::Expr) = get_substitutions(expr2, expr1)
+get_substitutions(expr1::Typ, expr2::Union{Expr, Symbol}) = get_substitutions(expr2, expr1)
 
-function get_substitutions(expr1s::Vector{Expr}, expr2)
+function get_substitutions(expr1s::Vector{Union{Expr, Symbol}}, expr2)
     d = Dict()
     for expr1 in expr1s
         d2 = get_substitutions(expr1, expr2)
@@ -158,11 +158,11 @@ function get_substitutions(expr1s::Vector{Expr}, expr2)
     return !isempty(d) ? d : nothing
 end
 
-get_substitutions(expr1, expr2s::Vector{Expr}) = get_substitutions(expr2s, expr1)
+get_substitutions(expr1, expr2s::Vector{Union{Expr, Symbol}}) = get_substitutions(expr2s, expr1)
 
 function get_substitutions(expr1::Typ, expr2::Typ)
     d = unify(expr1, expr2)
-    if isempty(d)
+    if !isnothing(d) && isempty(d)
         return true
     elseif !isnothing(d)
         #return [k => v for (k, v) in d if k isa TypeVar]
@@ -172,7 +172,7 @@ function get_substitutions(expr1::Typ, expr2::Typ)
     end
 end
 
-function get_argtypes(expr::Expr)
+function get_argtypes(expr::Union{Expr, Symbol})
     return get_argtypes(parseTypeExpr(expr))
 end
 
@@ -183,3 +183,25 @@ function get_argtypes(expr::Union{FunTyp,GenFunTyp,DistFunTyp})
         return [expr.elems[1]]
     end
 end
+
+function get_argtypes(expr::DataTyp)
+    return []
+end
+
+function is_traceable(expr::Union{Expr, Symbol})
+    return is_traceable(parseTypeExpr(expr))
+end
+
+function is_traceable(expr::Typ)
+    if expr isa FunTyp
+        return_type = last(expr.elems)
+    else
+        return_type = expr
+    end
+    if return_type isa GenFunTyp || return_type isa DistFunTyp
+        return true
+    else
+        return false
+    end
+end
+

@@ -6,49 +6,77 @@ include("typelang.jl")
 abstract type DSLNode end
 
 struct Primitive
-    name::String
-    type::Union{Expr,Vector{Expr}}
+    type::Union{Symbol,Expr,Vector{Expr}}
     expr::Function
 end
+# _trace = Primitive(
+#     "Trace",
+#     [:(G(:a => :b) × Symbol => :b),
+#         :(D(:a => :b) × Symbol => :b)],
+#     (generator::Expr, address::Symbol) -> Expr(:macrocall, Symbol("@trace"), Expr(:line), generator, address)
+# )
 
-
-_trace = Primitive(
-    "Trace",
-    [:(G(:a => :b) × Symbol => :b),
-        :(D(:a => :b) × Symbol => :b)],
-    (generator::Expr, address::Symbol) -> Expr(:macrocall, Symbol("@trace"), Expr(:line), generator, address)
+_zero = Primitive(
+    :(Real),
+    () -> 0.0
 )
 
+_one = Primitive(
+    :(PositiveReal),
+    () -> 1.0
+)
+
+_add = Primitive(
+    [:(Real × Real => Real),
+        :(Integer × Integer => Integer)],
+    (x, y) -> Expr(:call, :+, x, y)
+)
+
+_minus = Primitive(
+    [:(Real => Real),
+        :(Integer => Integer)],
+    (x, y) -> Expr(:call, :-, x, y)
+)
+
+_multiply = Primitive(
+    [:(Real × Real => Real),
+        :(Integer × Integer => Integer)],
+    (x, y) -> Expr(:call, :*, x, y)
+)
+
+_divide = Primitive(
+    [:(Real × Real => Real),
+        :(Integer × Integer => Integer)],
+    (x, y) -> Expr(:call, :/, x, y)
+)
+
+_power = Primitive(
+    [:(Real × Real => Real)],
+    (x, y) -> Expr(:call, :^, x, y)
+)
+
+
 _normal = Primitive(
-    "Normal",
     :(D(Real × PositiveReal => Real)),
     (mean::Real, variance::PositiveReal) -> Expr(:call, :normal, mean, variance)
 )
 
 _exponential = Primitive(
-    "Exponential",
     :(D(PositiveReal => PositiveReal)),
     (rate::PositiveReal) -> Expr(:call, :exponential, rate)
 )
 
 _map = Primitive(
-    "Map",
-    :(G(:a => :b) => G([:a] => [:b])),
-    fun::Symbol -> Expr(:call, :Map, fun)
+    :(G(:a => :b) × [:a] => G([:a] => [:b])),
+    (fun::Symbol, arr::Vector{Any}) -> Expr(:call, Expr(:call, :Map, fun), arr)
 )
 
 _exp = Primitive(
-    "exp",
     :(Real => PositiveReal),
     x -> Expr(:call, :exp, x)
 )
 
-# @gen function generate_single_weight(i)
-#     #return @trace(normal(0.0, 3.0), :w_kd)
-#     return 2+2
-# end;
-
-primitives = [_trace, _normal, _exponential, _map]
+primitives = [_normal, _exponential, _map, _exp]
 n_primitives = length(primitives)
 theta = ones(n_primitives) / n_primitives
 
@@ -78,12 +106,16 @@ function synthesize(library, environment, type)
 
     e_idx = categorical(theta)
     e = primitives[e_idx]
-    @show(e)
-    @show(get_argtypes(e.type))
-    @show(type)
+    args = [synthesize(library, environment, @show(arg_type)) for arg_type in get_argtypes(e.type)]
+    if is_traceable(e.type)
+        address = Symbol(pop!(greek_alphabet))
+        return Expr(:macrocall, Symbol("@trace"), Expr(:line), e.expr(args...), address)
+    else
+        return e.expr(args...)
+    end
 end
 
-synthesize(primitives, [], parseTypeExpr(:(G(Int64 × Int64 => [Float64]))))
+dump(synthesize(primitives, [], parseTypeExpr(:(G(Int64 × Int64 => [Float64])))))
 
 type = parseTypeExpr(:(Int64 × Int64 => [Float64]))
 type = parseTypeExpr(:(Int64 => [Float64]))
