@@ -1,31 +1,36 @@
 
-struct PositiveReal{Real}
-    x::Real
-    PositiveReal(x) = x > 0 ? new{Real}(x) : error("The given number must be positive")
-end
+# struct PositiveReal{Real}
+#     x::Real
+#     PositiveReal(x) = x > 0 ? new{Real}(x) : error("The given number must be positive")
+# end
 
-struct Probability{Real}
-    x::Real
-    Probability(x) = 0.0 <= x <= 1.0 ? new{Real}(x) : error("The given number must be between 0 and 1")
-end
+abstract type PositiveFloat <: AbstractFloat end
+abstract type Probability <: AbstractFloat end
+abstract type NonNegativeInteger <: Integer end
+abstract type PositiveInteger <: NonNegativeInteger end
+
+# struct Probability{Real} <: Real
+#     x::Real
+#     Probability(x) = 0.0 <= x <= 1.0 ? new{Real}(x) : error("The given number must be between 0 and 1")
+# end
 
 # struct ProbabilityVector{Vector{Real}}
 #     x::Vector{Real}
 #     ProbabilityVector(x) = Distributions.isprobvec(x) ? new{Vector{Real}}(x) : error("The vector must sum to 1 and contain numbers between 0 and 1")
 # end
 
-struct NonNegativeInteger{Int64}
-    x::Int64
-    NonNegativeInteger(x) = x >= 0 ? new{Int64}(x) : error("The given number must be an integer greater or equal to 0")
-end
+# struct NonNegativeInteger{Integer}
+#     x::Integer
+#     NonNegativeInteger(x) = x >= 0 ? new{Integer}(x) : error("The given number must be an integer greater or equal to 0")
+# end
 
-struct PositiveInteger{Int64}
-    x::Int64
-    PositiveInteger(x) = x > 0 ? new{Int64}(x) : error("The given number must be an integer greater than 0")
-end
+# struct PositiveInteger{Integer}
+#     x::Integer
+#     PositiveInteger(x) = x > 0 ? new{Integer}(x) : error("The given number must be an integer greater than 0")
+# end
 
-NumericType = Union{Real,Bool,Integer,PositiveReal,PositiveInteger,Probability}
-numeric_types = [Real, Bool, Integer, PositiveReal, PositiveInteger, Probability]
+NumericType = Union{Real,Bool,Integer,PositiveFloat,PositiveInteger,Probability}
+numeric_types = [Real, Bool, Integer, PositiveFloat, PositiveInteger, Probability]
 
 function get_compatible_types(observations, numeric_types::Array{Type,1} = numeric_types)::Array{Type,1}
     compatible_types = []
@@ -67,30 +72,30 @@ function get_compatible_types(observations::Array)::Array{Type,1}
     return compatible_types
 end
 
-function get_return_type(trace_node::TraceNode)
-    if isa(trace_node.generator, CombinatorNode)
-        return last(get_return_type(trace_node.generator))
-    elseif isa(trace_node.generator, Generator)
-        return trace_node.generator.support
-    end
-end
+# function get_return_type(trace_node::TraceNode)
+#     if isa(trace_node.generator, CombinatorNode)
+#         return last(get_return_type(trace_node.generator))
+#     elseif isa(trace_node.generator, Generator)
+#         return trace_node.generator.support
+#     end
+# end
 
-function get_return_type(num::Num)
-    return typeof(num.expr)
-end
+# function get_return_type(num::Num)
+#     return typeof(num.expr)
+# end
 
-function get_return_type(gen_node::GenNode)
-    return get_return_type(gen_node.expr[end])
-end
+# function get_return_type(gen_node::GenNode)
+#     return get_return_type(gen_node.expr[end])
+# end
 
-function get_return_type(comb_node::CombinatorNode)
-    # assert kernel is in scope
-    kernel_input_type = scope.generators[comb_node.kernel].argtypes
-    kernel_output_type = scope.generators[comb_node.kernel].support
-    return comb_node.combinator.type_signature(kernel_input_type => kernel_output_type)
-end
+# function get_return_type(comb_node::CombinatorNode)
+#     # assert kernel is in scope
+#     kernel_input_type = scope.generators[comb_node.kernel].argtypes
+#     kernel_output_type = scope.generators[comb_node.kernel].support
+#     return comb_node.combinator.type_signature(kernel_input_type => kernel_output_type)
+# end
 
-function get_function_type(funexpr)
-    fundef = splitdef(funexpr)
-    return eval(fundef[:args][1].args[2]) => eval(fundef[:rtype])
-end
+# function get_function_type(funexpr)
+#     fundef = splitdef(funexpr)
+#     return eval(fundef[:args][1].args[2]) => eval(fundef[:rtype])
+# end

@@ -3,18 +3,24 @@ using Gen
 include("types.jl")
 include("typelang.jl")
 
-abstract type DSLNode end
+abstract type Node end
+abstract type LeafNode <: Node end
+abstract type BinaryOpNode <: Node end
 
 struct Primitive
     type::Union{Symbol,Expr,Vector{Expr}}
     expr::Function
 end
-# _trace = Primitive(
-#     "Trace",
-#     [:(G(:a => :b) × Symbol => :b),
-#         :(D(:a => :b) × Symbol => :b)],
-#     (generator::Expr, address::Symbol) -> Expr(:macrocall, Symbol("@trace"), Expr(:line), generator, address)
-# )
+
+struct AST
+    op::Primitive
+    args::Vector{AST}
+end
+
+struct Compound
+    type::Union{Symbol,Expr,Vector{Expr}}
+    op::AST
+end
 
 _zero = Primitive(
     :(Real),
@@ -22,31 +28,27 @@ _zero = Primitive(
 )
 
 _one = Primitive(
-    :(PositiveReal),
+    :(PositiveFloat),
     () -> 1.0
 )
 
 _add = Primitive(
-    [:(Real × Real => Real),
-        :(Integer × Integer => Integer)],
+    :(Real × Real => Real),
     (x, y) -> Expr(:call, :+, x, y)
 )
 
 _minus = Primitive(
-    [:(Real => Real),
-        :(Integer => Integer)],
+    :(Real => Real),
     (x, y) -> Expr(:call, :-, x, y)
 )
 
 _multiply = Primitive(
-    [:(Real × Real => Real),
-        :(Integer × Integer => Integer)],
+    :(Real × Real => Real),
     (x, y) -> Expr(:call, :*, x, y)
 )
 
 _divide = Primitive(
-    [:(Real × Real => Real),
-        :(Integer × Integer => Integer)],
+    :(Real × PositiveFloat => Real),
     (x, y) -> Expr(:call, :/, x, y)
 )
 
@@ -55,67 +57,66 @@ _power = Primitive(
     (x, y) -> Expr(:call, :^, x, y)
 )
 
-
 _normal = Primitive(
-    :(D(Real × PositiveReal => Real)),
-    (mean::Real, variance::PositiveReal) -> Expr(:call, :normal, mean, variance)
+    :(D(Real × PositiveFloat => Real)),
+    (mean, variance) -> Expr(:call, :normal, mean, variance)
 )
 
 _exponential = Primitive(
-    :(D(PositiveReal => PositiveReal)),
-    (rate::PositiveReal) -> Expr(:call, :exponential, rate)
+    :(D(PositiveFloat => PositiveFloat)),
+    (rate) -> Expr(:call, :exponential, rate)
+)
+
+_poisson = Primitive(
+    :(D(PositiveFloat => Integer)),
+    (rate) -> Expr(:call, :poisson, rate)
+)
+
+_beta = Primitive(
+    :(D(PositiveFloat × PositiveFloat => Probability)),
+    (alpha, beta) -> Expr(:call, :beta, alpha, beta)
+)
+
+_fill = Primitive(
+    :(:a × PositiveInteger => [:a]),
+    (a, n) -> Expr(:call, :fill, a, n)
 )
 
 _map = Primitive(
     :(G(:a => :b) × [:a] => G([:a] => [:b])),
-    (fun::Symbol, arr::Vector{Any}) -> Expr(:call, Expr(:call, :Map, fun), arr)
+    (fun, arr) -> Expr(:call, Expr(:call, :Map, fun), arr)
 )
 
 _exp = Primitive(
-    :(Real => PositiveReal),
+    :(Real => PositiveFloat),
     x -> Expr(:call, :exp, x)
 )
 
-primitives = [_normal, _exponential, _map, _exp]
-n_primitives = length(primitives)
-theta = ones(n_primitives) / n_primitives
+_log = Primitive(
+    :(PositiveFloat => Real),
+    x -> Expr(:call, :log, x)
+)
 
-greek_alphabet = ['α', 'β', 'γ', 'δ', 'ε', 'ζ', 'η', 'θ', 'ι', 'κ', 'λ', 'μ', 'ν', 'ξ', 'ο', 'ρ', 'ς', 'σ', 'τ', 'υ', 'φ', 'χ', 'ψ', 'ω']
-latin_alphabet = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z']
+_one_plus_poisson = Compound(
+    :(PositiveInteger),
+    AST(
+        _add,
+        [
+            AST(
+                _one,
+                []
+            ),
+            AST(
+                _poisson,
+                [
+                    AST(
+                        _zero,
+                        []
+                    )
+                ]
+            )
+        ]
+    )
+)
 
-
-function synthesize(library, environment, type::GenFunTyp)#::Vector{Expr}
-    varname = Symbol(pop!(greek_alphabet)) # get unused variable name
-    argnames = [Symbol(pop!(latin_alphabet)) for arg in get_argtypes(type)]
-
-    body = synthesize(library, environment, last(type.elems))
-
-    genfun = quote
-        @gen function $(varname)($(argnames...))
-            return $body
-        end
-    end
-    return genfun
-end
-
-function synthesize(library, environment, type)
-    @show(type)
-    primitives = filter(x -> !isnothing(@show(get_substitutions(yield(x.type), type))), library)
-    n_primitives = length(primitives)
-    theta = ones(n_primitives) / n_primitives
-
-    e_idx = categorical(theta)
-    e = primitives[e_idx]
-    args = [synthesize(library, environment, @show(arg_type)) for arg_type in get_argtypes(e.type)]
-    if is_traceable(e.type)
-        address = Symbol(pop!(greek_alphabet))
-        return Expr(:macrocall, Symbol("@trace"), Expr(:line), e.expr(args...), address)
-    else
-        return e.expr(args...)
-    end
-end
-
-dump(synthesize(primitives, [], parseTypeExpr(:(G(Int64 × Int64 => [Float64])))))
-
-type = parseTypeExpr(:(Int64 × Int64 => [Float64]))
-type = parseTypeExpr(:(Int64 => [Float64]))
+concepts = [_zero, _one, _add, _multiply, _normal, _exponential, _poisson, _beta, _fill, _map, _exp, _one_plus_poisson]

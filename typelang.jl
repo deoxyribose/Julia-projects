@@ -90,7 +90,8 @@ function yield(exprs::Vector{Union{Expr, Symbol}})
 end
 
 function isasubtype(x::DataTyp, y::DataTyp)
-    return x.name <: y.name || y.name <: x.name
+    #return x.name <: y.name || y.name <: x.name
+    return x.name <: y.name
 end
 
 function binding(x, s)
@@ -104,7 +105,10 @@ end
 function unify(x, y, s)
     x = binding(x, s)
     y = binding(y, s)
-    if x == y || (x isa DataTyp && y isa DataTyp && isasubtype(x,y))
+    if x isa DataTyp && y isa DataTyp && !(x.name <: y.name)
+        return nothing
+    end
+    if x == y
         return s
     end
     if x isa TypeVar
