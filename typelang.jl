@@ -65,7 +65,31 @@ macro parseTypeExpr(x)
     return esc(:($(parseTypeExpr(x))))
 end
 
-function yield(expr::Union{Expr, Symbol})
+function exprFromType(t::Typ)
+    if t isa TypeVar
+        return QuoteNode(t.name)
+    elseif t isa DataTyp
+        return Symbol(t.name)
+    elseif t isa FunTyp
+        return Expr(:call, :(=>), exprFromType(t.elems.first), exprFromType(t.elems.second))
+    elseif t isa ProdTyp
+        return Expr(:call, :(×), exprFromType(t.elems.first), exprFromType(t.elems.second))
+    elseif t isa GenFunTyp
+        return Expr(:call, :G, Expr(:call, :Tuple, exprFromType(t.elems.first), exprFromType(t.elems.second)))
+    elseif t isa DistFunTyp
+        return Expr(:call, :D, Expr(:call, :Tuple, exprFromType(t.elems.first), exprFromType(t.elems.second)))
+    elseif t isa ListTyp
+        return Expr(:vect, exprFromType(t.name))
+    else
+        throw(ArgumentError("Unknown type: $t"))
+    end
+end
+
+macro expressionFromType(t)
+    esc(exprFromType(t))
+end
+
+function yield(expr::Union{Expr,Symbol})
     yield(parseTypeExpr(expr))
 end
 
@@ -77,7 +101,7 @@ function yield(expr::Typ)
     end
 end
 
-function yield(exprs::Vector{Union{Expr, Symbol}})
+function yield(exprs::Vector{Union{Expr,Symbol}})
     yields = []
     for expr in exprs
         push!(yields, yield(expr))
@@ -104,37 +128,37 @@ end
 function unify(x, y, s=Dict())
     x = binding(x, s)
     y = binding(y, s)
-    
+
     if x == y
         return s
     end
-    
+
     if x isa TypeVar
         s[x] = y
         return s
     end
-    
+
     if y isa TypeVar
         s[y] = x
         return s
     end
-    
+
     if x isa DataTyp && y isa DataTyp
-        if isasubtype(x, y) 
+        if isasubtype(x, y)
             s[x] = y
         else
             return nothing #Cannot unify
         end
         return s
     end
-    
+
     if typeof(x) != typeof(y)
         return nothing #Cannot unify
     end
-    
+
     # The type of x and y should match and one of them should not be a datatype or a typevar
     if x isa FunTyp || x isa GenFunTyp || x isa DistFunTyp || x isa ProdTyp
-       for (x_, y_) in zip(x.elems, y.elems)
+        for (x_, y_) in zip(x.elems, y.elems)
             sub = unify(x_, y_, s)
             if sub === nothing
                 return nothing # If cannot unify, return nothing
@@ -150,23 +174,23 @@ function unify(x, y, s=Dict())
     else
         return nothing #Cannot unify
     end
-    
+
     return s
 end
 
 unify(x, y) = unify(x, y, Dict())
 
-function get_substitutions(expr1::Union{Expr, Symbol}, expr2::Union{Expr, Symbol})
+function get_substitutions(expr1::Union{Expr,Symbol}, expr2::Union{Expr,Symbol})
     return get_substitutions(parseTypeExpr(expr1), parseTypeExpr(expr2))
 end
 
-function get_substitutions(expr1::Union{Expr, Symbol}, expr2::Typ)
+function get_substitutions(expr1::Union{Expr,Symbol}, expr2::Typ)
     return get_substitutions(parseTypeExpr(expr1), expr2)
 end
 
-get_substitutions(expr1::Typ, expr2::Union{Expr, Symbol}) = get_substitutions(expr2, expr1)
+get_substitutions(expr1::Typ, expr2::Union{Expr,Symbol}) = get_substitutions(expr2, expr1)
 
-function get_substitutions(expr1s::Vector{Union{Expr, Symbol}}, expr2)
+function get_substitutions(expr1s::Vector{Union{Expr,Symbol}}, expr2)
     d = Dict()
     for expr1 in expr1s
         d2 = get_substitutions(expr1, expr2)
@@ -177,7 +201,7 @@ function get_substitutions(expr1s::Vector{Union{Expr, Symbol}}, expr2)
     return !isempty(d) ? d : nothing
 end
 
-get_substitutions(expr1, expr2s::Vector{Union{Expr, Symbol}}) = get_substitutions(expr2s, expr1)
+get_substitutions(expr1, expr2s::Vector{Union{Expr,Symbol}}) = get_substitutions(expr2s, expr1)
 
 function get_substitutions(expr1::Typ, expr2::Typ)
     d = unify(expr1, expr2)
@@ -190,7 +214,29 @@ function get_substitutions(expr1::Typ, expr2::Typ)
     end
 end
 
-function get_argtypes(expr::Union{Expr, Symbol})
+function replace_in_type(expr::QuoteNode, subs)
+    if expr == exprFromType(subs.first)
+        return exprFromType(subs.second)
+    else
+        return expr
+    end
+end
+
+function replace_in_type(expr::Symbol, subs)
+    return expr
+end
+
+function replace_in_type(expr::Expr, subs)
+    if expr.head == :call
+        replaced_args = map(arg -> replace_in_type(arg, subs), expr.args[2:end])
+        return Expr(expr.head, expr.args[1], replaced_args...)
+    else
+        replaced_args = map(arg -> replace_in_type(arg, subs), expr.args)
+        return Expr(expr.head, replaced_args...)
+    end
+end
+
+function get_argtypes(expr::Union{Expr,Symbol})
     return get_argtypes(parseTypeExpr(expr))
 end
 
@@ -206,7 +252,7 @@ function get_argtypes(expr::DataTyp)
     return []
 end
 
-function is_traceable(expr::Union{Expr, Symbol})
+function is_traceable(expr::Union{Expr,Symbol})
     return is_traceable(parseTypeExpr(expr))
 end
 

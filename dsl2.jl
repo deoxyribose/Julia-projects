@@ -12,24 +12,34 @@ struct Primitive
     expr::Function
 end
 
+struct Compound
+    type::Union{Symbol,Expr,Vector{Expr}}
+    expr::Function
+end
+
 struct AST
-    op::Primitive
+    op::Union{Primitive, Compound}
     args::Vector{AST}
 end
 
-struct Compound
-    type::Union{Symbol,Expr,Vector{Expr}}
-    op::AST
-end
-
-_zero = Primitive(
-    :(Real),
+_zero_float = Primitive(
+    :(AbstractFloat),
     () -> 0.0
 )
 
-_one = Primitive(
+_one_float = Primitive(
     :(PositiveFloat),
     () -> 1.0
+)
+
+_zero_int = Primitive(
+    :(Integer),
+    () -> 0
+)
+
+_one_int = Primitive(
+    :(PositiveInteger),
+    () -> 1
 )
 
 _add = Primitive(
@@ -58,7 +68,7 @@ _power = Primitive(
 )
 
 _normal = Primitive(
-    :(D(Real × PositiveFloat => Real)),
+    :(D(Real × PositiveFloat => AbstractFloat)),
     (mean, variance) -> Expr(:call, :normal, mean, variance)
 )
 
@@ -98,25 +108,10 @@ _log = Primitive(
 )
 
 _one_plus_poisson = Compound(
-    :(PositiveInteger),
-    AST(
-        _add,
-        [
-            AST(
-                _one,
-                []
-            ),
-            AST(
-                _poisson,
-                [
-                    AST(
-                        _zero,
-                        []
-                    )
-                ]
-            )
-        ]
-    )
+    :(Real => PositiveInteger),
+    x -> _add.expr(_one_int.expr(), _poisson.expr(x))
 )
 
-concepts = [_zero, _one, _add, _multiply, _normal, _exponential, _poisson, _beta, _fill, _map, _exp, _one_plus_poisson]
+concepts = [_zero_float, _one_float, _zero_int, _one_int, _add, _multiply, _normal, _exponential, _poisson, _beta, _fill, _map, _exp, _one_plus_poisson]
+
+#replace_in_type(:(:a × PositiveInteger => [:a]), TypeVar(:a) => DataTyp(Real))
