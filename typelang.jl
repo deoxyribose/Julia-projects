@@ -90,7 +90,6 @@ function yield(exprs::Vector{Union{Expr, Symbol}})
 end
 
 function isasubtype(x::DataTyp, y::DataTyp)
-    #return x.name <: y.name || y.name <: x.name
     return x.name <: y.name
 end
 
@@ -102,44 +101,60 @@ function binding(x, s)
     end
 end
 
-function unify(x, y, s)
+function unify(x, y, s=Dict())
     x = binding(x, s)
     y = binding(y, s)
-    if x isa DataTyp && y isa DataTyp && !(x.name <: y.name)
-        return nothing
-    end
+    
     if x == y
         return s
     end
+    
     if x isa TypeVar
         s[x] = y
         return s
     end
-    s[y] = x
+    
     if y isa TypeVar
+        s[y] = x
         return s
     end
-    if typeof(x) == typeof(y)
-        if x isa ListTyp || x isa DataTyp
-            if unify(x, y, s) === nothing
-                return nothing
-            end
+    
+    if x isa DataTyp && y isa DataTyp
+        if isasubtype(x, y) 
+            s[x] = y
         else
-            for (x_, y_) in zip(x.elems, y.elems)
-                if unify(x_, y_, s) === nothing
-                    return nothing
-                end
-            end
+            return nothing #Cannot unify
         end
         return s
-    else
-        return nothing
     end
+    
+    if typeof(x) != typeof(y)
+        return nothing #Cannot unify
+    end
+    
+    # The type of x and y should match and one of them should not be a datatype or a typevar
+    if x isa FunTyp || x isa GenFunTyp || x isa DistFunTyp || x isa ProdTyp
+       for (x_, y_) in zip(x.elems, y.elems)
+            sub = unify(x_, y_, s)
+            if sub === nothing
+                return nothing # If cannot unify, return nothing
+            end
+            s = sub
+        end
+    elseif x isa ListTyp
+        sub = unify(x.name, y.name, s)
+        if sub === nothing
+            return nothing # If cannot unify, return nothing
+        end
+        s = sub
+    else
+        return nothing #Cannot unify
+    end
+    
+    return s
 end
 
 unify(x, y) = unify(x, y, Dict())
-
-# unify(@parseTypeExpr((:a => :b) => ([:a] => [:b])), @parseTypeExpr((Int64 => Float64) => ([Int64] => [Float64])))
 
 function get_substitutions(expr1::Union{Expr, Symbol}, expr2::Union{Expr, Symbol})
     return get_substitutions(parseTypeExpr(expr1), parseTypeExpr(expr2))
@@ -169,7 +184,6 @@ function get_substitutions(expr1::Typ, expr2::Typ)
     if !isnothing(d) && isempty(d)
         return true
     elseif !isnothing(d)
-        #return [k => v for (k, v) in d if k isa TypeVar]
         return [k => v for (k, v) in d if hasproperty(k, :name)]
     else
         return nothing

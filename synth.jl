@@ -10,7 +10,9 @@ function attention(library, type)
     Filters the library for concepts that unify with the given type.
     Returns a vector of probabilities for each such primitive in the library.
     """
-    concepts = filter(x -> !isnothing(get_substitutions(yield(x.type), type)), library)
+    substitutions = [get_substitutions(yield(x.type), type) for x in library]
+    subs = filter(x -> !isnothing(x), substitutions)
+    concepts = filter(x -> !isnothing(x), library)
     n_concepts = length(concepts)
     if n_concepts == 0
         error("No concepts found for type $type")
@@ -28,16 +30,18 @@ function attention(library, type)
     else
         theta = ones(n_concepts) / n_concepts
     end
-    return concepts, theta
+    return concepts, theta, subs
 end
 
 function synthesize(library, type)
     """
     Synthesizes a program of the given type from the given library.
     """
+    @show(type)
     concepts, theta = attention(library, type)
     e_idx = categorical(@show(theta))
     e = concepts[e_idx]
+    # infer types of arguments
     args = [synthesize(library, arg_type) for arg_type in get_argtypes(e.type)]
     if isa(e, Compound)
         return e.op
